@@ -3,10 +3,10 @@ package com.rebelai.wallace.fs;
 import java.io.File;
 import java.io.FilenameFilter;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.TreeSet;
 
 import org.slf4j.Logger;
@@ -14,8 +14,6 @@ import org.slf4j.LoggerFactory;
 
 import com.google.common.base.Strings;
 import com.google.common.collect.Iterables;
-import com.google.common.io.ByteSink;
-import com.google.common.io.ByteSource;
 import com.rebelai.wallace.Journal;
 
 public class FileSystemJournal implements Journal {
@@ -28,13 +26,14 @@ public class FileSystemJournal implements Journal {
 	protected final long maxSegmentSize;
 	protected final int maxWriteQueueSize;
 	private final Writer journalWriter;
+	private final Reader journalReader;
 	
 	public FileSystemJournal(final Path journalDirectoryPath) throws IOException{
 		//Defaults to 1GB
-		this(journalDirectoryPath, 1024*1024*1000, 10000);
+		this(journalDirectoryPath, 1024*1024*1000, 10000, 100);
 	}
 	
-	public FileSystemJournal(final Path journalDirectoryPath, final long maxSegmentSize, final int maxWriteQueueSize) throws IOException{
+	public FileSystemJournal(final Path journalDirectoryPath, final long maxSegmentSize, final int maxWriteQueueSize, final int maxReadBufferSize) throws IOException{
 		this.journalPath = journalDirectoryPath;
 		this.maxSegmentSize = maxSegmentSize;
 		this.maxWriteQueueSize = maxWriteQueueSize;
@@ -52,6 +51,7 @@ public class FileSystemJournal implements Journal {
         }
         
         this.journalWriter = new Writer(this, maxWriteQueueSize, maxSegmentSize);
+        this.journalReader = new Reader(this, maxReadBufferSize);
 	}
 	
 	public Path getEarliestJournal(){
@@ -122,6 +122,16 @@ public class FileSystemJournal implements Journal {
 		b.put(buffer);
 		b.flip();
 		this.journalWriter.write(b);
+	}
+
+	@Override
+	public byte[] read() throws IOException, InterruptedException {
+		return journalReader.read();
+	}
+
+	@Override
+	public List<byte[]> readN(int numOfMessages) throws IOException, InterruptedException {
+		return journalReader.readN(numOfMessages);
 	}
 
 }

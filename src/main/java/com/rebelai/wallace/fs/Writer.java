@@ -23,6 +23,7 @@ public class Writer implements Closeable {
 	private final long maxSegmentSize;
 	private AtomicLong currentFileSize = new AtomicLong(0);
 	private AsynchronousFileChannel channel;
+	private Path currentChannel;
 	private BlockingQueue<ByteBuffer> messagesToWrite;
 	private ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
 	private AtomicBoolean isWriting = new AtomicBoolean();
@@ -32,13 +33,13 @@ public class Writer implements Closeable {
 		@Override
 		public void completed(Integer result, ByteBuffer attachment) {
 			long s = currentFileSize.addAndGet(result);
+			LOG.debug("Writing is complete with current pos of {}", Long.valueOf(s));
 			if(attachment.hasRemaining()){
 				channel.write(attachment, s, attachment, this);
 			} else {
 				if(s >= maxSegmentSize){
 					try {
-						Writer.this.closeChannel();
-						Writer.this.open(journal.newJournal());
+						Writer.this.roll();
 					} catch (IOException e) {
 						LOG.error("Failed to close channel", e);
 					}
@@ -74,6 +75,13 @@ public class Writer implements Closeable {
 		this.isClosed = false;
 	}
 	
+	protected void roll() throws IOException{
+		LOG.debug("Rolling Journal file from {}", currentChannel);
+		Writer.this.closeChannel();
+		Writer.this.open(journal.newJournal());
+		LOG.debug("New journal file is {}", currentChannel);
+	}
+	
 	protected void open(Path file) throws IOException{
 		lock.writeLock().lock();
 		try {
@@ -81,14 +89,20 @@ public class Writer implements Closeable {
 				file = journal.newJournal();
 			}
 			
+			LOG.debug("Opening Writer to {}", file);
 			channel = AsynchronousFileChannel.open(file, StandardOpenOption.WRITE, StandardOpenOption.CREATE);
 			currentFileSize.set(channel.size());
+			currentChannel = file;
 			
 			if(currentFileSize.get() >= maxSegmentSize){
+				LOG.debug("File already appears to have reached it's limit. Opening a new one.");
 				channel.close();
-				channel = AsynchronousFileChannel.open(journal.newJournal(), StandardOpenOption.WRITE, StandardOpenOption.CREATE);
+				currentChannel = journal.newJournal();
+				channel = AsynchronousFileChannel.open(currentChannel, StandardOpenOption.WRITE, StandardOpenOption.CREATE);
 				currentFileSize.set(channel.size());
 			}
+			
+			LOG.debug("Writer is writing to {}", currentChannel);
 		} finally {
 			lock.writeLock().unlock();
 		}
@@ -111,8 +125,10 @@ public class Writer implements Closeable {
 		}
 		
 		if(isWriting.getAndSet(true)){
+			LOG.debug("Adding write to Queue of writes");
 			messagesToWrite.add(buffer);
 		} else {
+			LOG.debug("Nothing queued to write. Starting write.");
 			channel.write(buffer, currentFileSize.get(), buffer, handler);
 		}
 	}
