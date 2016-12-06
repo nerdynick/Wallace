@@ -13,7 +13,7 @@ public class FileSystemJournalTest {
 	@Test
 	public void testWriting() throws IOException{
 		Path journalDir = Files.createTempDirectory("WallaceTemp");
-		FileSystemJournal journal = new FileSystemJournal(journalDir, 12, 5);
+		FileSystemJournal journal = new FileSystemJournal(journalDir, 12, 5, 5);
 		
 		assertFalse(journal.isClosed());
 		

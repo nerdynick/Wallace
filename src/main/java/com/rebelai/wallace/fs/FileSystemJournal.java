@@ -8,7 +8,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.TreeSet;
+import java.util.concurrent.TimeUnit;
 
+import org.eclipse.jetty.io.ArrayByteBufferPool;
+import org.eclipse.jetty.io.ByteBufferPool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -21,12 +24,14 @@ public class FileSystemJournal implements Journal {
 	
 	private static final String extention = ".jrnl";
 	private static final int headerByteSize = 4; //We only store the length as long in the headers
+	protected static final int maxMessageSize = 1000000; 
 	
 	final Path journalPath;
 	protected final long maxSegmentSize;
 	protected final int maxWriteQueueSize;
 	private final Writer journalWriter;
 	private final Reader journalReader;
+	protected ByteBufferPool bufferPool;
 	
 	public FileSystemJournal(final Path journalDirectoryPath) throws IOException{
 		//Defaults to 1GB
@@ -52,6 +57,8 @@ public class FileSystemJournal implements Journal {
         
         this.journalWriter = new Writer(this, maxWriteQueueSize, maxSegmentSize);
         this.journalReader = new Reader(this, maxReadBufferSize);
+        
+        bufferPool = new ArrayByteBufferPool(0, 1024, maxMessageSize);
 	}
 	
 	public Path getEarliestJournal(){
@@ -108,25 +115,32 @@ public class FileSystemJournal implements Journal {
 		this.write(bytes, 0, bytes.length);
 	}
 	public void write(final byte[] bytes, int offset, int length) throws IOException{
-		ByteBuffer b = ByteBuffer.allocate(headerByteSize+length);
+		ByteBuffer b = bufferPool.acquire(headerByteSize+length, false);
 		b.clear();
 		b.putInt(length);
 		b.put(bytes, offset, length);
 		b.flip();
 		this.journalWriter.write(b);
 	}
-	public void write(final ByteBuffer buffer) throws IOException{
-		ByteBuffer b = ByteBuffer.allocate(headerByteSize+buffer.remaining());
+	public ByteBuffer write(final ByteBuffer buffer) throws IOException{
+		ByteBuffer b = bufferPool.acquire(headerByteSize+buffer.remaining(), false);
 		b.clear();
 		b.putInt(buffer.remaining());
 		b.put(buffer);
 		b.flip();
 		this.journalWriter.write(b);
+		
+		return buffer;
 	}
 
 	@Override
 	public byte[] read() throws IOException, InterruptedException {
 		return journalReader.read();
+	}
+	
+	@Override
+	public byte[] read(final long timeout, final TimeUnit timeUnit) throws IOException, InterruptedException{
+		return journalReader.read(timeout, timeUnit);
 	}
 
 	@Override

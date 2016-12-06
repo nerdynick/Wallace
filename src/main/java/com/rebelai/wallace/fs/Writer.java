@@ -37,6 +37,7 @@ public class Writer implements Closeable {
 			if(attachment.hasRemaining()){
 				channel.write(attachment, s, attachment, this);
 			} else {
+				Writer.this.journal.bufferPool.release(attachment);
 				if(s >= maxSegmentSize){
 					try {
 						Writer.this.roll();
@@ -58,7 +59,8 @@ public class Writer implements Closeable {
 		}
 		@Override
 		public void failed(Throwable exc, ByteBuffer attachment) {
-			LOG.error("Failed to write to channel", exc);
+			LOG.error("Failed to write to channel. Closing writer", exc);
+			Writer.this.journal.bufferPool.release(attachment);
 			try {
 				Writer.this.close();
 			} catch(IOException e){
@@ -77,8 +79,8 @@ public class Writer implements Closeable {
 	
 	protected void roll() throws IOException{
 		LOG.debug("Rolling Journal file from {}", currentChannel);
-		Writer.this.closeChannel();
-		Writer.this.open(journal.newJournal());
+		this.closeChannel();
+		this.open(journal.newJournal());
 		LOG.debug("New journal file is {}", currentChannel);
 	}
 	
