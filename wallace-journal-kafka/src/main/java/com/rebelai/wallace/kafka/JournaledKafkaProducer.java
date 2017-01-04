@@ -59,19 +59,12 @@ public class JournaledKafkaProducer implements Producer<String,String>, MetricSe
 		final byte[] keyBytes = Preconditions.checkNotNull(key).getBytes(Charsets.UTF_8);
 		final ByteBuffer buffer = write(topicBytes, keyBytes, Preconditions.checkNotNull(message));
 		
-		try {
-			return journal
+		return journal
 					.write(buffer)
-					.thenApplyAsync(v->{
+					.handleAsync((v,e)->{
 						bufferPool.release(buffer);
 						return null;
 					});
-		} catch (IOException e) {
-			bufferPool.release(buffer);
-			final CompletableFuture<RecordMetadata> f = new CompletableFuture<RecordMetadata>();
-			f.completeExceptionally(e);
-			return f;
-		}
 	}
 	
 	public CompletableFuture<RecordMetadata> send(String topic, String key, String message) {
