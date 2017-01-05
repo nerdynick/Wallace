@@ -15,6 +15,7 @@ import org.slf4j.LoggerFactory;
 
 import com.codahale.metrics.CachedGauge;
 import com.codahale.metrics.Metric;
+import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.health.HealthCheck;
 import com.google.common.collect.ImmutableMap;
 import com.rebelai.wallace.Journal;
@@ -153,8 +154,13 @@ public abstract class AsyncJournal<T extends AsynchronousChannel> implements Jou
 	public Map<String, Metric> getMetrics() {
 		if(metrics == null){
 			ImmutableMap.Builder<String, Metric> metBuilder = ImmutableMap.builder();
-			metBuilder.putAll(this.getWriter().getMetrics());
-			metBuilder.putAll(this.getReader().getMetrics());
+			
+			for(Map.Entry<String, Metric> m: this.getWriter().getMetrics().entrySet()){
+				metBuilder.put(MetricRegistry.name("writer", m.getKey()), m.getValue());
+			}
+			for(Map.Entry<String, Metric> m: this.getReader().getMetrics().entrySet()){
+				metBuilder.put(MetricRegistry.name("reader", m.getKey()), m.getValue());
+			}
 			
 			metBuilder.put("UnreadMessages", new CachedGauge<Long>(100, TimeUnit.MILLISECONDS){
 				@Override

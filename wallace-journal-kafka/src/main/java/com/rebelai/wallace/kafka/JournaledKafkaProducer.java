@@ -50,7 +50,8 @@ public class JournaledKafkaProducer implements Producer<String,String>, MetricSe
 		readThread = new Thread(new ReadRunnable(), "journaled-kafka-reader-"+threadInt.getAndIncrement());	
     }
 	
-	public void start(){
+	public void start() throws IOException{
+		journal.open();
 		readThread.start();
 	}
 	
@@ -204,7 +205,10 @@ public class JournaledKafkaProducer implements Producer<String,String>, MetricSe
 	@Override
 	public Map<String, com.codahale.metrics.Metric> getMetrics() {
 		ImmutableMap.Builder<String, com.codahale.metrics.Metric> metrics = ImmutableMap.builder();
-		metrics.putAll(this.journal.getMetrics());
+
+		for(Map.Entry<String, com.codahale.metrics.Metric> m: this.journal.getMetrics().entrySet()){
+			metrics.put(MetricRegistry.name("journal", m.getKey()), m.getValue());
+		}
 		
 		for(Map.Entry<MetricName, ? extends Metric> met: this.metrics().entrySet()){
 			final Metric m = met.getValue();
