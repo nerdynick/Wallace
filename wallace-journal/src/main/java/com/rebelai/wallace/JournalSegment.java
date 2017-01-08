@@ -4,6 +4,9 @@ import java.io.Closeable;
 import java.io.IOException;
 
 public interface JournalSegment<T> extends Closeable {
+	public static final String extention = ".jrnl";
+	public static final String metaIndexExt = ".idx";
+	
 	public long readOffset();
 	public void readOffset(long value);
 	public void readOffsetIncr(int value);

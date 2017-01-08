@@ -6,6 +6,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.AsynchronousChannel;
 import java.nio.channels.CompletionHandler;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -14,7 +15,6 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-import org.eclipse.jetty.io.ArrayByteBufferPool;
 import org.eclipse.jetty.io.ByteBufferPool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,6 +26,7 @@ import com.codahale.metrics.MetricSet;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.rebelai.wallace.BooleanLatch;
+import com.rebelai.wallace.OversizedArrayByteBufferPool;
 
 public abstract class AsyncReader<T extends AsynchronousChannel> implements Closeable, MetricSet {
 	private static final Logger LOG = LoggerFactory.getLogger(AsyncReader.class);
@@ -48,16 +49,11 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 	private final Meter msgReadMeter = new Meter();
 	private final Meter physicalReadMeter = new Meter();
 	
-	
-	protected AsyncReader(final AsyncJournal<T> journal) throws IOException{
-		this(journal, 100);
-	}
-	
-	protected AsyncReader(final AsyncJournal<T> journal, final int maxQueuedMessages) throws IOException{
+	protected AsyncReader(final AsyncJournal<T> journal, final int maxQueuedMessages, final int maxMessageSize) throws IOException{
 		this.journal = journal;
-		this.queuedMessages = new LinkedBlockingQueue<>(maxQueuedMessages);
 		this.maxQueuedMessages = maxQueuedMessages;
-		bufferPool = new ArrayByteBufferPool(0, 1024, 1024*5);
+		this.queuedMessages = new LinkedBlockingQueue<>(maxQueuedMessages);
+		bufferPool = new OversizedArrayByteBufferPool(0, 1024, maxMessageSize);
 		
 		ImmutableMap.Builder<String, Metric> metBuilder = ImmutableMap.builder();
 		metBuilder.put("MessageReadRate", msgReadMeter);
@@ -103,6 +99,9 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 							lengthBuffer.flip();
 							attachment.length = lengthBuffer.getInt(0);
 							LOG.debug("Length: {}", attachment.length);
+							if(attachment.length <= 0 || attachment.length > 1024*5){
+								LOG.warn("Possible Message length issue: {}", attachment.length);
+							}
 							attachment.message = bufferPool.acquire(attachment.length, false);
 							attachment.message.clear();
 							lengthBuffer.clear();
@@ -276,15 +275,13 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 			}
 		}
 		
-		
-		//If the reader has been closed we should drain everything
-		if(this.isClosed() && i<numOfMessages){
-			List<byte[]> remainder = new ArrayList<>();
-			this.queuedMessages.drainTo(remainder);
-			msgs.addAll(remainder);
-		}
-		
 		return msgs.build();
+	}
+
+	public Collection<byte[]> drain() {
+		List<byte[]> remainder = new ArrayList<>();
+		this.queuedMessages.drainTo(remainder);
+		return remainder;
 	}
 	
 	public boolean isClosed(){
@@ -309,6 +306,11 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 	public void close(long timeout, TimeUnit unit) {
 		if(!isClosed()){
 			this.isClosed = true;
+			try {
+				closeSegment();
+			} catch (IOException e) {
+				LOG.debug("Failed to close segment", e);
+			}
 		}
 	}
 	

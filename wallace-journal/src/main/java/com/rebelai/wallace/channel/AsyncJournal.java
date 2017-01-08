@@ -1,12 +1,15 @@
 package com.rebelai.wallace.channel;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.channels.AsynchronousChannel;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.LinkedList;
+import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -19,6 +22,7 @@ import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.health.HealthCheck;
 import com.google.common.collect.ImmutableMap;
 import com.rebelai.wallace.Journal;
+import com.rebelai.wallace.health.PercentHealthCheck;
 
 public abstract class AsyncJournal<T extends AsynchronousChannel> implements Journal {
 	private static final Logger LOG = LoggerFactory.getLogger(AsyncJournal.class);
@@ -143,11 +147,76 @@ public abstract class AsyncJournal<T extends AsynchronousChannel> implements Jou
 	}
 	
 
+	@Override
 	public int queuedWrites(){
 		return AsyncJournal.this.getWriter().getQueuedMessages();
 	}
+	@Override
 	public int queuedReads(){
 		return AsyncJournal.this.getReader().getQueuedMessages();
+	}
+	
+
+	@Override
+	public boolean isWritingClosed(){
+		return this.getWriter().isClosed();
+	}
+	@Override
+	public boolean isReadingClosed(){
+		return this.getReader().isClosed();
+	}
+	@Override
+	public boolean isClosed(){
+		return isWritingClosed() && isReadingClosed();
+	}
+
+	@Override
+	public void close() throws IOException {
+		this.getWriter().close();
+		this.getReader().close();
+	}
+
+	@Override
+	public void close(long timeout, TimeUnit unit) {
+		try {
+			this.getWriter().close();
+		} catch (IOException e) {
+			LOG.error("Failed to close file writer");
+		}
+		this.getReader().close(timeout, unit);
+	}
+
+	@Override
+	public CompletableFuture<Void> write(final byte[] bytes){
+		return this
+				.write(bytes, 0, bytes.length);
+	}
+	@Override
+	public CompletableFuture<Void> write(final byte[] bytes, int offset, int length){
+		return this.getWriter()
+			.write(bytes, offset, length);
+	}
+	@Override
+	public CompletableFuture<Void> write(final ByteBuffer buffer){
+		return this.getWriter()
+			.write(buffer);
+	}
+	
+	@Override
+	public byte[] read() throws IOException, InterruptedException {
+		return this.getReader().read();
+	}
+	@Override
+	public byte[] read(final long timeout, final TimeUnit timeUnit) throws IOException, InterruptedException{
+		return this.getReader().read(timeout, timeUnit);
+	}
+	@Override
+	public List<byte[]> readN(int numOfMessages) throws IOException, InterruptedException {
+		return this.getReader().readN(numOfMessages);
+	}
+	@Override
+	public Collection<byte[]> drain() {
+		return this.getReader().drain();
 	}
 	
 	@Override
@@ -183,22 +252,26 @@ public abstract class AsyncJournal<T extends AsynchronousChannel> implements Jou
 	@Override
 	public Map<String, HealthCheck> getHealthChecksWarning() {
 		ImmutableMap.Builder<String, HealthCheck> healthBuilder = ImmutableMap.builder();
-		healthBuilder.put("ReaderBufferCapacity", new HealthCheck(){
+		healthBuilder.put("ReaderBufferCapacity", new PercentHealthCheck(){
 			@Override
-			protected Result check() throws Exception {
-				if(AsyncJournal.this.getReader().getQueuedMessagePercentFull() > 75){
-					return Result.unhealthy("Reader buffer is > 75% full");
-				}
-				return Result.healthy();
+			protected int percent() {
+				return AsyncJournal.this.getReader().getQueuedMessagePercentFull();
+			}
+
+			@Override
+			protected int threshold() {
+				return 75;
 			}
 		});
-		healthBuilder.put("WriteBufferCapacity", new HealthCheck(){
+		healthBuilder.put("WriteBufferCapacity", new PercentHealthCheck(){
 			@Override
-			protected Result check() throws Exception {
-				if(AsyncJournal.this.getWriter().getQueuedMessagePercentFull() > 75){
-					return Result.unhealthy("Write buffer is > 75% full");
-				}
-				return Result.healthy();
+			protected int percent() {
+				return AsyncJournal.this.getWriter().getQueuedMessagePercentFull();
+			}
+
+			@Override
+			protected int threshold() {
+				return 50;
 			}
 		});
 		return healthBuilder.build();
@@ -224,6 +297,17 @@ public abstract class AsyncJournal<T extends AsynchronousChannel> implements Jou
 					return Result.unhealthy("Writer has been stopped or closed");
 				}
 				return Result.healthy();
+			}
+		});
+		healthBuilder.put("WriteBufferCapacity", new PercentHealthCheck(){
+			@Override
+			protected int percent() {
+				return AsyncJournal.this.getWriter().getQueuedMessagePercentFull();
+			}
+
+			@Override
+			protected int threshold() {
+				return 75;
 			}
 		});
 		

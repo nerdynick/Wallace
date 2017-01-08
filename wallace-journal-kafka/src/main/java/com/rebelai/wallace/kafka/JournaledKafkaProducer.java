@@ -1,5 +1,6 @@
 package com.rebelai.wallace.kafka;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.List;
@@ -16,7 +17,6 @@ import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.Metric;
 import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.PartitionInfo;
-import org.eclipse.jetty.io.ArrayByteBufferPool;
 import org.eclipse.jetty.io.ByteBufferPool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,9 +28,12 @@ import com.codahale.metrics.health.HealthCheck;
 import com.google.common.base.Charsets;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableMap;
+import com.rebelai.wallace.BooleanLatch;
 import com.rebelai.wallace.Journal;
+import com.rebelai.wallace.OversizedArrayByteBufferPool;
+import com.rebelai.wallace.health.TimeHealthCheck;
 
-public class JournaledKafkaProducer implements Producer<String,String>, MetricSet {
+public class JournaledKafkaProducer implements Producer<String,String>, MetricSet, Closeable {
 	private static final Logger LOG = LoggerFactory.getLogger(JournaledKafkaProducer.class);
 	
 	private static AtomicInteger threadInt  = new AtomicInteger(1);
@@ -41,13 +44,16 @@ public class JournaledKafkaProducer implements Producer<String,String>, MetricSe
 	protected ByteBufferPool bufferPool;
 	private boolean isClosed = false;
 	private Thread readThread;
+	private ReadRunnable readRunner;
+	private long lastReadTime = 0;
 	
-	public JournaledKafkaProducer(Journal journal, KafkaProducer<String,String> producer) {
+	public JournaledKafkaProducer(Journal journal, KafkaProducer<String,String> producer, final int maxMessageSize) {
 		this.producer = producer;
 		this.journal = journal;
 		
-		bufferPool = new ArrayByteBufferPool(0, 1024, 1024*5);
-		readThread = new Thread(new ReadRunnable(), "journaled-kafka-reader-"+threadInt.getAndIncrement());	
+		bufferPool = new OversizedArrayByteBufferPool(0, 1024, maxMessageSize);
+		readRunner = new ReadRunnable();
+		readThread = new Thread(readRunner, "journaled-kafka-reader-"+threadInt.getAndIncrement());
     }
 	
 	public void start() throws IOException{
@@ -63,6 +69,9 @@ public class JournaledKafkaProducer implements Producer<String,String>, MetricSe
 		return journal
 					.write(buffer)
 					.handleAsync((v,e)->{
+						if(e != null){
+							LOG.error("Issue writing to journal", e);
+						}
 						bufferPool.release(buffer);
 						return null;
 					});
@@ -91,11 +100,6 @@ public class JournaledKafkaProducer implements Producer<String,String>, MetricSe
 	}
 
 	@Override
-	public void flush() {
-		producer.flush();
-	}
-
-	@Override
 	public List<PartitionInfo> partitionsFor(String topic) {
 		return producer.partitionsFor(topic);
 	}
@@ -106,28 +110,26 @@ public class JournaledKafkaProducer implements Producer<String,String>, MetricSe
 	}
 
 	@Override
-	public void close() {
+	public synchronized void close() {
 		if(!isClosed()){
-			isClosed=true;
 			try {
+				LOG.debug("Closing Journal");
 				journal.close();
 			} catch (IOException e) {
 				LOG.error("Failed to close journal properly", e);
 			}
+			LOG.debug("Closing Self and waiting for drain");
+			isClosed=true;
+			
+			try {
+				readRunner.runningLatch.await();
+				LOG.debug("Drain done");
+			} catch (InterruptedException e) {
+				LOG.error("Kafka publishing wait and drain was interupted", e);
+			}
+			
+			LOG.debug("Closing Kafka producer");
 			producer.close();
-		}
-	}
-
-	@Override
-	public void close(long timeout, TimeUnit unit) {
-		if(!isClosed()){
-			isClosed=true;
-			try {
-				journal.close();
-			} catch (IOException e) {
-				LOG.error("Failed to close journal properly", e);
-			}
-			producer.close(timeout, unit);
 		}
 	}
 	
@@ -174,30 +176,48 @@ public class JournaledKafkaProducer implements Producer<String,String>, MetricSe
 		return new ProducerRecord<>(new String(topicByte,Charsets.UTF_8), new String(keyByte,Charsets.UTF_8), new String(messageByte,Charsets.UTF_8));
 	}
 	
-	private class ReadRunnable implements Runnable{
+	private class ReadRunnable implements Runnable {
+		protected BooleanLatch runningLatch = new BooleanLatch();
 		@Override
 		public void run() {
-			while(!JournaledKafkaProducer.this.journal.isClosed()){
-				byte[] msg = null;
+			if(runningLatch.tryAquire()){
 				try {
-					msg = JournaledKafkaProducer.this.journal.read(5, TimeUnit.MILLISECONDS);
-				} catch (IOException | InterruptedException e1) {
-					LOG.warn("Failed to read messages. Will attempt more reads.", e1);
-				}
-				
-				if(msg != null){
-					final ProducerRecord<String, String> record = JournaledKafkaProducer.this.read(msg);
-					
-					JournaledKafkaProducer.this.producer.send(record);
-				} else {
-					try {
-						Thread.sleep(5);
-					} catch (InterruptedException e) {
-						LOG.warn("Interrupt while waiting for messages. Will attempt more reads.");
+					while(!JournaledKafkaProducer.this.isClosed){
+						JournaledKafkaProducer.this.lastReadTime = System.currentTimeMillis();
+						byte[] msg = null;
+						try {
+							msg = JournaledKafkaProducer.this.journal.read(5, TimeUnit.MILLISECONDS);
+						} catch (IOException | InterruptedException e1) {
+							LOG.warn("Failed to read messages. Will attempt more reads.", e1);
+						}
+						
+						if(msg != null){
+							final ProducerRecord<String, String> record = JournaledKafkaProducer.this.read(msg);
+							
+							JournaledKafkaProducer.this.producer.send(record);
+						} else {
+							try {
+								LOG.debug("Waiting for message");
+								Thread.sleep(5);
+							} catch (InterruptedException e) {
+								LOG.warn("Interrupt while waiting for messages. Will attempt more reads.");
+							}
+						}
 					}
+					LOG.warn("Journal has been closed. Draining read buffer");
+					for(byte[] msg: JournaledKafkaProducer.this.journal.drain()){
+						if(msg != null){
+							final ProducerRecord<String, String> record = JournaledKafkaProducer.this.read(msg);
+							
+							JournaledKafkaProducer.this.producer.send(record);
+						}
+					}
+				} catch(Exception e){
+					LOG.error("Kafka publishing died", e);
+				} finally {
+					runningLatch.release();
 				}
 			}
-			LOG.info("Journal has been closed. Shutting down kafka read thread.");
 		}
 		
 	}
@@ -225,12 +245,31 @@ public class JournaledKafkaProducer implements Producer<String,String>, MetricSe
 	public Map<String, HealthCheck> getHealthChecksWarning(){
 		ImmutableMap.Builder<String, HealthCheck> checks = ImmutableMap.builder();
 		checks.putAll(this.journal.getHealthChecksWarning());
+		checks.put("JournalPublisherThread", new TimeHealthCheck(){
+			@Override
+			protected long lastTime() {
+				return lastReadTime;
+			}
+			@Override
+			protected long maxDiff() {
+				return TimeUnit.SECONDS.toMillis(30);
+			}
+		});
 		
 		return checks.build();
 	}
 	public Map<String, HealthCheck> getHealthChecksError(){
 		ImmutableMap.Builder<String, HealthCheck> checks = ImmutableMap.builder();
-		checks.putAll(this.journal.getHealthChecksWarning());
+		checks.putAll(this.journal.getHealthChecksError());
+		checks.put("JournaledKafkaClosed", new HealthCheck(){
+			@Override
+			protected Result check() throws Exception {
+				if(JournaledKafkaProducer.this.isClosed){
+					return Result.unhealthy("JournaledKafkaProducer has been closed");
+				}
+				return Result.healthy();
+			}
+		});
 		
 		return checks.build();
 	}

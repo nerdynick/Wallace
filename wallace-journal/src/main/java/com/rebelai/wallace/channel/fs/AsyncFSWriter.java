@@ -19,8 +19,8 @@ public class AsyncFSWriter extends AsyncWriter<AsynchronousFileChannel> {
 	private final long maxSegmentSize;
 	private AtomicLong currentFileSize = new AtomicLong(0);
 	
-	public AsyncFSWriter(final AsyncJournal<AsynchronousFileChannel> journal, final int queueCapacity, final long maxSegmentSize) throws IOException{
-		super(journal, queueCapacity);
+	public AsyncFSWriter(final AsyncJournal<AsynchronousFileChannel> journal, final int queueCapacity, final long maxSegmentSize, final int maxMessageSize) throws IOException{
+		super(journal, queueCapacity, maxMessageSize);
 		
 		Preconditions.checkArgument(maxSegmentSize > 0);
 		Preconditions.checkArgument(maxSegmentSize <= Long.MAX_VALUE);

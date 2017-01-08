@@ -17,13 +17,9 @@ public class AsyncFSReader extends AsyncReader<AsynchronousFileChannel> {
 	private static final Logger LOG = LoggerFactory.getLogger(AsyncFSReader.class);
 	
 	private AtomicLong currentFileSize = new AtomicLong(0);
-	
-	protected AsyncFSReader(AsyncJournal<AsynchronousFileChannel> journal) throws IOException {
-		this(journal, 100);
-	}
 
-	protected AsyncFSReader(AsyncJournal<AsynchronousFileChannel> journal, int maxQueuedMessages) throws IOException {
-		super(journal, maxQueuedMessages);
+	protected AsyncFSReader(AsyncJournal<AsynchronousFileChannel> journal, int maxQueuedMessages, final int maxMessageSize) throws IOException {
+		super(journal, maxQueuedMessages, maxMessageSize);
 	}
 	
 	protected AsynchronousFileChannel _open(final AsyncJournalSegment<AsynchronousFileChannel> segment) throws IOException{

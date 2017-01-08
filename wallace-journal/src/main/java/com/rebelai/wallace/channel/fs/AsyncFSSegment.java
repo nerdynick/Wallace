@@ -26,7 +26,7 @@ import com.rebelai.wallace.channel.fs.meta.FSMeta;
 public class AsyncFSSegment implements AsyncJournalSegment<AsynchronousFileChannel> {
 	private static final Logger LOG = LoggerFactory.getLogger(AsyncFSSegment.class);
 	
-	private static final String metaIndexExt = ".idx";
+	
 	
 	private final AtomicLong readOffset;
 	private final AtomicInteger msgRead;
@@ -47,8 +47,10 @@ public class AsyncFSSegment implements AsyncJournalSegment<AsynchronousFileChann
 	public AsyncFSSegment(Path segment) throws IOException{
 		this.segment = Preconditions.checkNotNull(segment);
 		if(!Files.exists(segment)){
-			LOG.debug("Creating new Segment");
+			LOG.info("Creating new Segment at {}", segment);
 			Files.createFile(segment);
+		} else {
+			LOG.info("Loading Segment at {}", segment);
 		}
 		
 		boolean shouldInitMeta = false;
@@ -79,6 +81,8 @@ public class AsyncFSSegment implements AsyncJournalSegment<AsynchronousFileChann
 		readOffset = new AtomicLong(metaMap.readOffset(mapBuffer));
 		msgRead = new AtomicInteger(metaMap.msgReadCount(mapBuffer));
 		msgTotal = new AtomicInteger(metaMap.msgCount(mapBuffer));
+		
+		LOG.info("Segment Loaded with Info: Offset={}, ReadMsgs={}, TotalMsgs={} for segment {}", readOffset.get(), msgRead.get(), msgTotal.get(), this);
 	}
 
 	@Override
@@ -137,7 +141,7 @@ public class AsyncFSSegment implements AsyncJournalSegment<AsynchronousFileChann
 
 	@Override
 	public int msgCountIncr() {
-		return metaMap.msgReadCount(mapBuffer, msgTotal.incrementAndGet());
+		return metaMap.msgCount(mapBuffer, msgTotal.incrementAndGet());
 	}
 
 	@Override

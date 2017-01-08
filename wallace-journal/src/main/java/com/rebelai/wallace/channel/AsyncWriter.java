@@ -12,7 +12,6 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-import org.eclipse.jetty.io.ArrayByteBufferPool;
 import org.eclipse.jetty.io.ByteBufferPool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,6 +23,7 @@ import com.codahale.metrics.MetricSet;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableMap;
 import com.rebelai.wallace.BooleanLatch;
+import com.rebelai.wallace.OversizedArrayByteBufferPool;
 
 public abstract class AsyncWriter<T extends AsynchronousChannel> implements Closeable, MetricSet {
 	private static final Logger LOG = LoggerFactory.getLogger(AsyncWriter.class);
@@ -36,6 +36,7 @@ public abstract class AsyncWriter<T extends AsynchronousChannel> implements Clos
 	
 	private BlockingQueue<Message> messagesToWrite;
 	private final int queueCapacity;
+	private final int maxMessageSize;
 	private ReentrantReadWriteLock channeLock = new ReentrantReadWriteLock();
 	private BooleanLatch isWriting = new BooleanLatch();
 	private boolean isClosed = true;
@@ -44,11 +45,13 @@ public abstract class AsyncWriter<T extends AsynchronousChannel> implements Clos
 	private final Meter writerMeter = new Meter();
 	private final Meter physicalWriterMeter = new Meter();
 	
-	protected AsyncWriter(final AsyncJournal<T> journal, final int queueCapacity) throws IOException{
+	protected AsyncWriter(final AsyncJournal<T> journal, final int queueCapacity, final int maxMessageSize) throws IOException{
 		this.journal = journal;
 		this.queueCapacity = queueCapacity;
+		this.maxMessageSize = maxMessageSize;
+		
 		messagesToWrite = new LinkedBlockingQueue<>(queueCapacity);
-		bufferPool = new ArrayByteBufferPool(0, 1024, 1024*5);
+		bufferPool = new OversizedArrayByteBufferPool(0, 1024, maxMessageSize);
 		
 		ImmutableMap.Builder<String, Metric> metBuilder = ImmutableMap.builder();
 		metBuilder.put("MessageWriteRate", writerMeter);
@@ -203,11 +206,29 @@ public abstract class AsyncWriter<T extends AsynchronousChannel> implements Clos
 		return closed;
 	}
 	
+	private void _validate(final int msgSize) throws IOException{
+		if(msgSize <= 0){
+			throw new IOException("Message doesn't contain any bytes to write");
+		}
+		
+		if(msgSize > maxMessageSize){
+			LOG.warn("Message is larger then max: Size={} Max={}", msgSize, maxMessageSize);
+		}
+	}
+	
 	public CompletableFuture<Void> write(final byte[] bytes, int offset, int length){
 		Preconditions.checkNotNull(bytes);
 		if(bytes.length-offset < length){
 			CompletableFuture<Void> f= new CompletableFuture<>();
 			f.completeExceptionally(new IOException("Message doesn't contain the requested amount of bytes"));
+			return f;
+		}
+		
+		try {
+			_validate(length);
+		} catch (Exception e){
+			CompletableFuture<Void> f= new CompletableFuture<>();
+			f.completeExceptionally(e);
 			return f;
 		}
 		
@@ -224,9 +245,12 @@ public abstract class AsyncWriter<T extends AsynchronousChannel> implements Clos
 		if(buffer.position() != 0){
 			buffer.flip();
 		}
-		if(buffer.remaining() <= 0){
+		
+		try {
+			_validate(buffer.remaining());
+		} catch (Exception e){
 			CompletableFuture<Void> f= new CompletableFuture<>();
-			f.completeExceptionally(new IOException("Message doesn't contain any bytes to write"));
+			f.completeExceptionally(e);
 			return f;
 		}
 		

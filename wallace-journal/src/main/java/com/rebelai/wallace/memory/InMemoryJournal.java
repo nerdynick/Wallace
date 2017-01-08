@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
@@ -73,6 +74,14 @@ public class InMemoryJournal implements Journal {
 	@Override
 	public boolean isClosed() {
 		return isClosed.get();
+	}
+	@Override
+	public boolean isWritingClosed() {
+		return this.isClosed.get();
+	}
+	@Override
+	public boolean isReadingClosed() {
+		return false;
 	}
 
 	@Override
@@ -147,7 +156,7 @@ public class InMemoryJournal implements Journal {
 		final ImmutableList.Builder<byte[]> msgs = ImmutableList.builder();
 		
 		int i=0;
-		while(!this.isClosed() && i<numOfMessages){
+		while(!this.isWritingClosed() && i<numOfMessages){
 			try {
 				byte[] msg = this.messages.poll(10, TimeUnit.MILLISECONDS);
 				if(msg != null){
@@ -159,15 +168,14 @@ public class InMemoryJournal implements Journal {
 			}
 		}
 		
-		
-		//If the reader has been closed we should drain everything
-		if(this.isClosed() && i<numOfMessages){
-			List<byte[]> remainder = new ArrayList<>();
-			this.messages.drainTo(remainder);
-			msgs.addAll(remainder);
-		}
-		
 		return msgs.build();
+	}
+
+	@Override
+	public Collection<byte[]> drain() {
+		List<byte[]> remainder = new ArrayList<>();
+		this.messages.drainTo(remainder);
+		return remainder;
 	}
 
 	@Override

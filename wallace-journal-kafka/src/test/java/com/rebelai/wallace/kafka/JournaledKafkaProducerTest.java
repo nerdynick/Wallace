@@ -21,7 +21,7 @@ public class JournaledKafkaProducerTest {
 		@SuppressWarnings("unchecked")
 		KafkaProducer<String,String> kafaproducer = Mockito.mock(KafkaProducer.class);
 		
-		JournaledKafkaProducer producer = new JournaledKafkaProducer(journal, kafaproducer);
+		JournaledKafkaProducer producer = new JournaledKafkaProducer(journal, kafaproducer, 1024*2);
 		
 		final String topic = "testTopic";
 		final String key = "testKey";

@@ -37,7 +37,11 @@ public class FileSystemJournalTest {
 		//NOTE: Max segment size is sized less then the total number of messages 
 		//	intended length would actually be. To test that full messages are 
 		//	written to segments before rolling.
-		FileSystemJournal journal = new FileSystemJournal(journalDir, ((msgCount/2)*(buffers.limit()+4))-4, msgCount+5, msgCount+5);
+		final long maxSegmentSize = ((msgCount/2)*(buffers.limit()+4))-4; 
+		final int maxWriteQueueSize = msgCount+5; 
+		final int maxReadBufferSize = msgCount+5; 
+		final int maxMessageSize = 1024*2;
+		FileSystemJournal journal = new FileSystemJournal(journalDir, maxSegmentSize, maxWriteQueueSize, maxReadBufferSize, maxMessageSize);
 		LOG.debug("Opening");
 		journal.open();
 		
