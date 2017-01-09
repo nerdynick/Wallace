@@ -36,7 +36,7 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 	protected AsyncJournalSegment<T> segment;
 	protected T channel;
 	final protected ByteBufferPool bufferPool;
-	final private ByteBuffer readBuffer = ByteBuffer.allocate(1024*2);
+	final private ByteBuffer readBuffer = ByteBuffer.allocate(1024*4);
 	final private ByteBuffer lengthBuffer = ByteBuffer.allocate(headerByteSize);
 	
 	private final BlockingQueue<byte[]> queuedMessages;
