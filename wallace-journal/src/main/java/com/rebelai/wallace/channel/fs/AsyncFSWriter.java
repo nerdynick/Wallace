@@ -3,12 +3,17 @@ package com.rebelai.wallace.channel.fs;
 import java.io.IOException;
 import java.nio.channels.AsynchronousFileChannel;
 import java.nio.channels.CompletionHandler;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.codahale.metrics.CachedGauge;
+import com.codahale.metrics.Metric;
 import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableMap;
 import com.rebelai.wallace.channel.AsyncJournal;
 import com.rebelai.wallace.channel.AsyncJournalSegment;
 import com.rebelai.wallace.channel.AsyncWriter;
@@ -59,5 +64,18 @@ public class AsyncFSWriter extends AsyncWriter<AsynchronousFileChannel> {
 	
 	protected boolean shouldRoll(){
 		return (currentFileSize.get() >= maxSegmentSize);
+	}
+	
+	@Override
+	public Map<String, Metric> getMetrics() {
+		ImmutableMap.Builder<String, Metric> metBuilder = ImmutableMap.builder();
+		metBuilder.putAll(super.getMetrics());
+		metBuilder.put("CurrentFileSize", new CachedGauge<Long>(100, TimeUnit.MILLISECONDS){
+			@Override
+			protected Long loadValue() {
+				return currentFileSize.get();
+			}
+		});
+		return metBuilder.build();
 	}
 }

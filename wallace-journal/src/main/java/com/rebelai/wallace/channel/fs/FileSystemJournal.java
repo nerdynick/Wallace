@@ -15,8 +15,6 @@ import com.google.common.base.Strings;
 import com.rebelai.wallace.JournalSegment;
 import com.rebelai.wallace.channel.AsyncJournal;
 import com.rebelai.wallace.channel.AsyncJournalSegment;
-import com.rebelai.wallace.channel.AsyncReader;
-import com.rebelai.wallace.channel.AsyncWriter;
 
 public class FileSystemJournal extends AsyncJournal<AsynchronousFileChannel> {
 	private static final Logger LOG = LoggerFactory.getLogger(FileSystemJournal.class);
@@ -33,7 +31,7 @@ public class FileSystemJournal extends AsyncJournal<AsynchronousFileChannel> {
         }
     };
 	
-	public FileSystemJournal(final Path journalDirectoryPath, final long maxSegmentSize, final int maxWriteQueueSize, final int maxReadBufferSize, final int maxMessageSize) throws IOException{
+	public FileSystemJournal(final Path journalDirectoryPath, final long maxSegmentSize, final int maxWriteQueueSize, final int maxReadBufferSize, final int maxMessageSize, final int readBufferSize) throws IOException{
 		super();
 		this.journalPath = journalDirectoryPath;
 		this.maxSegmentSize = maxSegmentSize;
@@ -54,7 +52,7 @@ public class FileSystemJournal extends AsyncJournal<AsynchronousFileChannel> {
         LOG.info("Creating journal at {}", journalDirectoryPath);
         
         this.journalWriter = new AsyncFSWriter(this, maxWriteQueueSize, maxSegmentSize, maxMessageSize);
-        this.journalReader = new AsyncFSReader(this, maxReadBufferSize, maxMessageSize);
+        this.journalReader = new AsyncFSReader(this, maxReadBufferSize, maxMessageSize, readBufferSize);
 	}
 
 	@Override
@@ -67,7 +65,7 @@ public class FileSystemJournal extends AsyncJournal<AsynchronousFileChannel> {
 	}
 
 	@Override
-	public synchronized void open() throws IOException {
+	protected void _open() throws IOException {
 		LOG.debug("Searching for journals");
 		final TreeSet<String> journals = getAllJournals();
 		LOG.debug("Found {} journals", journals.size());
@@ -76,12 +74,6 @@ public class FileSystemJournal extends AsyncJournal<AsynchronousFileChannel> {
 			final AsyncFSSegment seg = new AsyncFSSegment(p);
 			this.addSegment(seg);
 		}
-		
-		LOG.debug("Starting Writer");
-		journalWriter.start();
-		
-		LOG.debug("Starting Reader");
-		journalReader.start();
 	}
 	
 	private TreeSet<String> getAllJournals(){
@@ -100,12 +92,12 @@ public class FileSystemJournal extends AsyncJournal<AsynchronousFileChannel> {
 	}
 
 	@Override
-	protected AsyncWriter<AsynchronousFileChannel> getWriter() {
+	protected AsyncFSWriter getWriter() {
 		return this.journalWriter;
 	}
 
 	@Override
-	protected AsyncReader<AsynchronousFileChannel> getReader() {
+	protected AsyncFSReader getReader() {
 		return this.journalReader;
 	}
 

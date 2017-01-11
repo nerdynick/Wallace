@@ -3,12 +3,14 @@ package com.rebelai.wallace.channel;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.AsynchronousChannel;
+import java.nio.file.Path;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.TreeSet;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
@@ -22,6 +24,7 @@ import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.health.HealthCheck;
 import com.google.common.collect.ImmutableMap;
 import com.rebelai.wallace.Journal;
+import com.rebelai.wallace.channel.fs.AsyncFSSegment;
 import com.rebelai.wallace.health.PercentHealthCheck;
 
 public abstract class AsyncJournal<T extends AsynchronousChannel> implements Journal {
@@ -169,11 +172,28 @@ public abstract class AsyncJournal<T extends AsynchronousChannel> implements Jou
 	public boolean isClosed(){
 		return isWritingClosed() && isReadingClosed();
 	}
+	
+	@Override
+	public synchronized void open() throws IOException {
+		segments.clear();
+		this._open();
+		
+		LOG.debug("Starting Writer");
+		this.getWriter().start();
+		
+		LOG.debug("Starting Reader");
+		this.getReader().start();
+	}
+	
+	protected abstract void _open() throws IOException;
 
 	@Override
 	public void close() throws IOException {
 		this.getWriter().close();
 		this.getReader().close();
+		for(AsyncJournalSegment<T> seg: this.segments){
+			seg.close();
+		}
 	}
 
 	@Override
@@ -184,6 +204,13 @@ public abstract class AsyncJournal<T extends AsynchronousChannel> implements Jou
 			LOG.error("Failed to close file writer");
 		}
 		this.getReader().close(timeout, unit);
+		for(AsyncJournalSegment<T> seg: this.segments){
+			try {
+				seg.close();
+			} catch (IOException e) {
+				LOG.error("Failed to close segment {}", seg);
+			}
+		}
 	}
 
 	@Override
@@ -235,6 +262,18 @@ public abstract class AsyncJournal<T extends AsynchronousChannel> implements Jou
 				@Override
 				protected Long loadValue() {
 					return AsyncJournal.this.unreadMessages();
+				}
+			});
+			metBuilder.put("TotalMessages", new CachedGauge<Long>(100, TimeUnit.MILLISECONDS){
+				@Override
+				protected Long loadValue() {
+					return AsyncJournal.this.totalMessages();
+				}
+			});
+			metBuilder.put("ReadMessages", new CachedGauge<Long>(100, TimeUnit.MILLISECONDS){
+				@Override
+				protected Long loadValue() {
+					return AsyncJournal.this.readMessages();
 				}
 			});
 			metBuilder.put("TotalJournalSegments", new CachedGauge<Integer>(100, TimeUnit.MILLISECONDS){

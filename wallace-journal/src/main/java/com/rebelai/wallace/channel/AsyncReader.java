@@ -36,8 +36,10 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 	protected AsyncJournalSegment<T> segment;
 	protected T channel;
 	final protected ByteBufferPool bufferPool;
-	final private ByteBuffer readBuffer = ByteBuffer.allocate(1024*4);
+	final private ByteBuffer readBuffer;
 	final private ByteBuffer lengthBuffer = ByteBuffer.allocate(headerByteSize);
+	private ByteBuffer _currentMessage;
+	private int _currentMessageLength = 0;
 	
 	private final BlockingQueue<byte[]> queuedMessages;
 	private final int maxQueuedMessages;
@@ -49,11 +51,12 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 	private final Meter msgReadMeter = new Meter();
 	private final Meter physicalReadMeter = new Meter();
 	
-	protected AsyncReader(final AsyncJournal<T> journal, final int maxQueuedMessages, final int maxMessageSize) throws IOException{
+	protected AsyncReader(final AsyncJournal<T> journal, final int maxQueuedMessages, final int maxMessageSize, final int readBufferSize) throws IOException{
 		this.journal = journal;
 		this.maxQueuedMessages = maxQueuedMessages;
 		this.queuedMessages = new LinkedBlockingQueue<>(maxQueuedMessages);
 		bufferPool = new OversizedArrayByteBufferPool(0, 1024, maxMessageSize);
+		readBuffer = ByteBuffer.allocate(readBufferSize);
 		
 		ImmutableMap.Builder<String, Metric> metBuilder = ImmutableMap.builder();
 		metBuilder.put("MessageReadRate", msgReadMeter);
@@ -76,52 +79,63 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 		return metrics;
 	}
 	
-	private CompletionHandler<Integer, Message> handler = new CompletionHandler<Integer, Message>(){
+	public AsyncJournalSegment<T> currentSegment(){
+		return segment;
+	}
+	
+	private CompletionHandler<Integer, Void> handler = new CompletionHandler<Integer, Void>(){
+		private void resetCurrentMessage(){
+			lengthBuffer.clear();
+			_currentMessageLength = 0;
+			if(_currentMessage != null){
+				AsyncReader.this.bufferPool.release(_currentMessage);
+				_currentMessage = null;
+			}
+		}
+		
 		@Override
-		public void completed(Integer result, Message attachment) {
+		public void completed(Integer result, Void attachment) {
 			physicalReadMeter.mark();
 			if(isClosed){
 				LOG.info("Closed stopping read");
 				readBuffer.clear();
-				lengthBuffer.clear();
-				attachment.reset();
+				resetCurrentMessage();
 				return;
 			}
 			
-			if(result >= 0){
-				LOG.debug("Read {} bytes. Buffer is at pos {}", result, readBuffer.position());
-				AsyncReader.this.read(result.intValue());
+			if(result > 0){
+				LOG.debug("Read {} bytes.", result);
 				readBuffer.flip();
 				while(readBuffer.remaining() > 0){
-					if(attachment.length <= 0){
-						lengthBuffer.put(readBuffer.get());
+					byte val = readBuffer.get();
+					if(_currentMessageLength <= 0){
+						lengthBuffer.put(val);
 						if(lengthBuffer.remaining() == 0){
 							lengthBuffer.flip();
-							attachment.length = lengthBuffer.getInt(0);
-							LOG.debug("Length: {}", attachment.length);
-							if(attachment.length <= 0 || attachment.length > 1024*5){
-								LOG.warn("Possible Message length issue: {}", attachment.length);
+							_currentMessageLength = lengthBuffer.getInt(0);
+							LOG.debug("Length: {}", Integer.valueOf(_currentMessageLength));
+							if(_currentMessageLength <= 0 || _currentMessageLength > 1024*5){
+								LOG.warn("Possible Message length issue: {}", Integer.valueOf(_currentMessageLength));
 							}
-							attachment.message = bufferPool.acquire(attachment.length, false);
-							attachment.message.clear();
-							lengthBuffer.clear();
+							_currentMessage = bufferPool.acquire(_currentMessageLength, false);
+							_currentMessage.clear();
 						}
 					} else {
-						attachment.message.put(readBuffer.get());
-						if(attachment.message.position() == attachment.length){
+						_currentMessage.put(val);
+						if(_currentMessage.position() == _currentMessageLength){
 							LOG.debug("Full Message Read");
-							byte[] msg = new byte[attachment.length];
-							attachment.message.position(0);
-							attachment.message.get(msg);
-							lengthBuffer.clear();
-							attachment.reset();
+							byte[] msg = new byte[_currentMessageLength];
+							_currentMessage.position(0);
+							_currentMessage.get(msg);
+							resetCurrentMessage();
 							
 							try {
 								LOG.debug("Putting on Queue");
 								queuedMessages.put(msg);
-								LOG.debug("Updating Offset and Count {}", AsyncReader.this.segment.msgReadCount());
+//								LOG.debug("Updating Offset and Count {}, {}", AsyncReader.this.segment.readOffset(), AsyncReader.this.segment.msgReadCount());
 								AsyncReader.this.segment.msgReadCountIncr();
 								AsyncReader.this.segment.readOffsetIncr(4+msg.length);
+								AsyncReader.this.read(4+msg.length);
 								msgReadMeter.mark();
 							} catch (InterruptedException e) {
 								LOG.warn("Failed to add message to queue. Was interupted while waiting.");
@@ -129,10 +143,10 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 						}
 					}
 				}
+				LOG.debug("Finished parsing buffer");
 				readBuffer.clear();
 				if(!isClosed){
-					LOG.debug("Reading next message");
-					AsyncReader.this._read(readBuffer, attachment, this);
+					AsyncReader.this._read();
 				} else {
 					LOG.info("Reader has been closed. Shutting read down.");
 					isReading.release();
@@ -145,11 +159,11 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 						LOG.debug("Rolling segment");
 						try {
 							lengthBuffer.clear();
-							attachment.reset();
+							resetCurrentMessage();
 							
 							AsyncReader.this.roll();
 							LOG.debug("Rolling done. Starting read from new file");
-							AsyncReader.this._read(readBuffer, attachment, this);
+							AsyncReader.this._read();
 						} catch(IOException e){
 							LOG.error("Failed to roll segment", e);
 							isReading.release();
@@ -157,23 +171,27 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 					} else {
 						LOG.trace("Waiting on segment writes");
 						try {
-							Thread.sleep(10);
+							Thread.sleep(5);
+							//We release the lock since we are just tailing the file. 
+							//This lets anyone waiting to be woken up after these long periods of sleep.
+							//But we must do it after the sleep otherwise we can wind up with a number of 
+							//IO Threads being created due to multiple starts and sleeps
 							isReading.release();
-							AsyncReader.this.startRead(attachment);
+							AsyncReader.this.startRead();
 						} catch (InterruptedException e) {
 							LOG.warn("Interrupted while waiting for writes");
 						}
 					}
 				} else {
 					LOG.info("Reader has been closed. Shutting read down.");
-					isReading.release();
 					lengthBuffer.clear();
-					attachment.reset();
+					resetCurrentMessage();
+					isReading.release();
 				}
 			}
 		}
 		@Override
-		public void failed(Throwable exc, Message attachment) {
+		public void failed(Throwable exc, Void attachment) {
 			LOG.error("Failed to read segment", exc);
 			isReading.release();
 		}
@@ -186,9 +204,25 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 		return false;
 	}
 	
+	private void _read(){
+		int plusBytes = 0;
+		if(_currentMessageLength > 0){
+			plusBytes+= 4;
+		} else {
+			plusBytes+=lengthBuffer.position();
+		}
+		if(_currentMessage != null){
+//			LOG.debug("POS: {}", _currentMessage.position());
+			plusBytes += _currentMessage.position();
+		}
+		
+		LOG.debug("Reading next message from {} + {} bytes", AsyncReader.this.segment.readOffset(), plusBytes);
+		_read(readBuffer, handler, plusBytes);
+	}
+	
 	protected abstract boolean _shouldRoll();
 	protected abstract void read(final int bytes);
-	protected abstract void _read(ByteBuffer buffer, Message message, CompletionHandler<Integer, Message> handler);
+	protected abstract void _read(ByteBuffer buffer, CompletionHandler<Integer, Void> handler, int plusBytes);
 	
 	public int getQueuedMessages(){
 		return queuedMessages.size();
@@ -196,17 +230,17 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 	
 	public synchronized void start() throws IOException{
 		this.isClosed = false;
+		this.readBuffer.clear();
+		this.lengthBuffer.clear();
 		this.open();
-		this.startRead(null);
+		this.startRead();
 	}
 	
-	protected synchronized void startRead(final Message message){
+	protected synchronized void startRead(){
 		if(!isClosed){
 			if(isReading.tryAquire()){
 				LOG.trace("Starting read: {}", isReading.getState());
-				Message msg = (message != null ? message : new Message());
-				msg.reset();
-				this._read(readBuffer, msg, handler);
+				this._read();
 			} else {
 				LOG.debug("Already reading");
 			}
@@ -248,15 +282,15 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 	protected abstract void _closeSegment() throws IOException;
 	
 	public byte[] read() throws NoSuchElementException{
-		startRead(null);
+		startRead();
 		return this.queuedMessages.remove();
 	}
 	public byte[] read(final long timeout, final TimeUnit timeUnit) throws IOException, InterruptedException{
-		startRead(null);
+		startRead();
 		return this.queuedMessages.poll(timeout, timeUnit);
 	}
 	public List<byte[]> readN(final int numOfMessages) throws IOException, InterruptedException{
-		startRead(null);
+		startRead();
 		if(numOfMessages > maxQueuedMessages){
 			LOG.warn("Requested more messages then the buffer can hold. This may impact read performance by increasing blocking chances.");
 		}
@@ -336,18 +370,5 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 		LOG.debug("Looking to wait. State: {}", this.isReading.getState());
 		this.isReading.await(timeout, unit);
 		LOG.debug("Queue has {} elements", this.queuedMessages.size());
-	}
-	
-	protected class Message{
-		public int length;
-		public ByteBuffer message;
-		
-		public void reset(){
-			length = 0;
-			if(message != null){
-				AsyncReader.this.bufferPool.release(message);
-				message = null;
-			}
-		}
 	}
 }
