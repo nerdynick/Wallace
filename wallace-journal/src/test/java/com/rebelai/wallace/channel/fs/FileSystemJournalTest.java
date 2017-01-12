@@ -1,6 +1,10 @@
 package com.rebelai.wallace.channel.fs;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -8,7 +12,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -52,15 +55,14 @@ public class FileSystemJournalTest {
 		assertEquals(0, journal.queuedWrites());
 		assertEquals(0, journal.queuedReads());
 		
-		CompletableFuture<Void> f = null;
-		
 		LOG.debug("Writing 1st set");
 		for(int i=0; i<msgCount/2; i++){
 			buffers.position(0);
-			f = journal.write(buffers);
+			journal.write(buffers);
 		}
+		
 		LOG.debug("Waiting for write to be done");
-		f.get(2, TimeUnit.SECONDS);
+		journal.getWriter().await(5, TimeUnit.SECONDS);
 		
 		//Ensure the journal rolled
 		assertNotNull(journal.getFirst());
@@ -70,7 +72,7 @@ public class FileSystemJournalTest {
 		LOG.debug("Writing 2nd set");
 		for(int i=0; i<msgCount/2; i++){
 			buffers.position(0);
-			f = journal.write(buffers);
+			journal.write(buffers);
 		}
 		LOG.debug("Waiting for write to be done");
 		journal.getWriter().await(5, TimeUnit.SECONDS);
@@ -119,7 +121,7 @@ public class FileSystemJournalTest {
 		}
 	}
 	
-//	@Test
+	@Test
 	public void testWriteReadCloseOpen() throws IOException, InterruptedException, ExecutionException, TimeoutException{
 		LOG.debug("Doing Write/Read Open/Close test");
 		final int msgCount = 10; //Must be an even number

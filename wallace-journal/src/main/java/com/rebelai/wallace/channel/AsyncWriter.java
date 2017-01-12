@@ -102,15 +102,13 @@ public abstract class AsyncWriter<T extends AsynchronousChannel> implements Clos
 				LOG.debug("Completing Future");
 				attachment.complete(null); //Trigger any listening events. This should be async and non blocking
 
-				synchronized(AsyncWriter.this){
-					final Message b = messagesToWrite.poll();
-					if(b != null){
-						LOG.debug("Writing next message in queue");
-						AsyncWriter.this.write(b, this);
-					} else {
-						LOG.debug("No messages to write.");
-						isWriting.release();
-					}
+				final Message b = messagesToWrite.poll();
+				if(b != null){
+					LOG.debug("Writing next message in queue");
+					AsyncWriter.this.write(b, this);
+				} else {
+					LOG.debug("No messages to write.");
+					isWriting.release();
 				}
 			}
 		}
@@ -127,16 +125,18 @@ public abstract class AsyncWriter<T extends AsynchronousChannel> implements Clos
 	
 	
 	
-	private void write(final Message msg){
+	private void write(final Message msg) throws IOException{
 		if(msg != null){
 			writerMeter.mark();
-			synchronized(this){
-				if(isWriting.tryAquire()){
-					LOG.debug("Nothing queued to write. Starting write.");
-					this.write(msg, handler);
-				} else {
-					LOG.debug("Adding write to Queue of writes");
-					messagesToWrite.add(msg);
+			if(isWriting.tryAquire()){
+				LOG.debug("Nothing queued to write. Starting write.");
+				this.write(msg, handler);
+			} else {
+				LOG.debug("Adding write to Queue of writes");
+				try {
+					messagesToWrite.put(msg);
+				} catch (InterruptedException e) {
+					throw new IOException("Interrupted while waiting to add message", e);
 				}
 			}
 		}
@@ -274,7 +274,11 @@ public abstract class AsyncWriter<T extends AsynchronousChannel> implements Clos
 		}
 
 		Message msg = new Message(buffer);
-		write(msg);
+		try {
+			write(msg);
+		} catch (IOException e) {
+			msg.completeExceptionally(e);
+		}
 		return msg;
 	}
 
@@ -296,7 +300,11 @@ public abstract class AsyncWriter<T extends AsynchronousChannel> implements Clos
 	
 	public void _drainAndWait(){
 		LOG.debug("Attempting a kicker to the work as a just incase");
-		this.write(this.messagesToWrite.poll());
+		try {
+			this.write(this.messagesToWrite.poll());
+		} catch (IOException e) {
+			LOG.error("Failed to drain write queue", e);
+		}
 		
 		try {
 			LOG.debug("Waiting for write queue to be drained");
