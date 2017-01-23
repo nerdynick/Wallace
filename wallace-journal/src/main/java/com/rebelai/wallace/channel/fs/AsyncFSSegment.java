@@ -20,6 +20,7 @@ import org.slf4j.LoggerFactory;
 
 import com.google.common.base.Preconditions;
 import com.rebelai.wallace.JournalSegment;
+import com.rebelai.wallace.JournalSegmentStats;
 import com.rebelai.wallace.channel.AsyncJournalSegment;
 import com.rebelai.wallace.channel.fs.meta.FSMeta;
 
@@ -94,6 +95,11 @@ public class AsyncFSSegment implements AsyncJournalSegment<AsynchronousFileChann
 			.append(" IsWrite: ").append(this.writeChannel != null)
 			.append(")");
 		return b.toString();
+	}
+
+	@Override
+	public JournalSegmentStats getStats(){
+		return new JournalSegmentStats(readOffset(), msgReadCount(), msgCount(), isOpenForReading(), isOpenForWriting());
 	}
 	
 	@Override

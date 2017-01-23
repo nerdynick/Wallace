@@ -291,65 +291,16 @@ public abstract class AsyncJournal<T extends AsynchronousChannel> implements Jou
 	@Override
 	public Map<String, HealthCheck> getHealthChecksWarning() {
 		ImmutableMap.Builder<String, HealthCheck> healthBuilder = ImmutableMap.builder();
-		healthBuilder.put("ReaderBufferCapacity", new PercentHealthCheck(){
-			@Override
-			protected int percent() {
-				return AsyncJournal.this.getReader().getQueuedMessagePercentFull();
-			}
-
-			@Override
-			protected int threshold() {
-				return 75;
-			}
-		});
-		healthBuilder.put("WriteBufferCapacity", new PercentHealthCheck(){
-			@Override
-			protected int percent() {
-				return AsyncJournal.this.getWriter().getQueuedMessagePercentFull();
-			}
-
-			@Override
-			protected int threshold() {
-				return 50;
-			}
-		});
+		healthBuilder.putAll(this.getReader().getHealthChecksWarning());
+		healthBuilder.putAll(this.getWriter().getHealthChecksWarning());
 		return healthBuilder.build();
 	}
 
 	@Override
 	public Map<String, HealthCheck> getHealthChecksError() {
 		ImmutableMap.Builder<String, HealthCheck> healthBuilder = ImmutableMap.builder();
-		
-		healthBuilder.put("ReaderStopped", new HealthCheck(){
-			@Override
-			protected Result check() throws Exception {
-				if(AsyncJournal.this.getReader().isClosed()){
-					return Result.unhealthy("Reader has been stopped or closed");
-				}
-				return Result.healthy();
-			}
-		});
-		healthBuilder.put("WritingStopped", new HealthCheck(){
-			@Override
-			protected Result check() throws Exception {
-				if(AsyncJournal.this.getWriter().isClosed()){
-					return Result.unhealthy("Writer has been stopped or closed");
-				}
-				return Result.healthy();
-			}
-		});
-		healthBuilder.put("WriteBufferCapacity", new PercentHealthCheck(){
-			@Override
-			protected int percent() {
-				return AsyncJournal.this.getWriter().getQueuedMessagePercentFull();
-			}
-
-			@Override
-			protected int threshold() {
-				return 75;
-			}
-		});
-		
+		healthBuilder.putAll(this.getReader().getHealthChecksError());
+		healthBuilder.putAll(this.getWriter().getHealthChecksError());
 		return healthBuilder.build();
 	}
 }

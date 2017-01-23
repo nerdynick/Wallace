@@ -31,4 +31,5 @@ public interface JournalSegment<T> extends Closeable {
 	public T openWrite() throws IOException;
 	public boolean equals(JournalSegment<T> seg);
 	
+	public JournalSegmentStats getStats();
 }

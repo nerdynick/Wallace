@@ -20,10 +20,13 @@ import com.codahale.metrics.CachedGauge;
 import com.codahale.metrics.Meter;
 import com.codahale.metrics.Metric;
 import com.codahale.metrics.MetricSet;
+import com.codahale.metrics.health.HealthCheck;
+import com.codahale.metrics.health.HealthCheck.Result;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableMap;
 import com.rebelai.wallace.BooleanLatch;
 import com.rebelai.wallace.OversizedArrayByteBufferPool;
+import com.rebelai.wallace.health.PercentHealthCheck;
 
 public abstract class AsyncWriter<T extends AsynchronousChannel> implements Closeable, MetricSet {
 	private static final Logger LOG = LoggerFactory.getLogger(AsyncWriter.class);
@@ -331,5 +334,55 @@ public abstract class AsyncWriter<T extends AsynchronousChannel> implements Clos
 		public Message(final ByteBuffer buffer){
 			this.buffer = buffer;
 		}
+	}
+	
+	public Map<String, HealthCheck> getHealthChecksWarning() {
+		ImmutableMap.Builder<String, HealthCheck> healthBuilder = ImmutableMap.builder();
+		healthBuilder.put("WriteBufferCapacity", new PercentHealthCheck(){
+			@Override
+			protected int percent() {
+				return AsyncWriter.this.getQueuedMessagePercentFull();
+			}
+
+			@Override
+			protected int threshold() {
+				return 50;
+			}
+		});
+		return healthBuilder.build();
+	}
+
+	public Map<String, HealthCheck> getHealthChecksError() {
+		ImmutableMap.Builder<String, HealthCheck> healthBuilder = ImmutableMap.builder();
+		healthBuilder.put("WritingStopped", new HealthCheck(){
+			@Override
+			protected Result check() throws Exception {
+				if(AsyncWriter.this.isClosed()){
+					StringBuilder b = new StringBuilder("Writer has been stopped or closed.");
+					b.append(" Segment: ").append(AsyncWriter.this.segment);
+					if(AsyncWriter.this.segment != null){
+						b.append(" "). append(AsyncWriter.this.segment.getStats());
+					}
+					b.append(" Channel State: ").append(AsyncWriter.this.isChannelClosed());
+					b.append(" LockState: ").append(AsyncWriter.this.isWriting.getState());
+					
+					return Result.unhealthy(b.toString());
+				}
+				return Result.healthy();
+			}
+		});
+		healthBuilder.put("WriteBufferCapacity", new PercentHealthCheck(){
+			@Override
+			protected int percent() {
+				return AsyncWriter.this.getQueuedMessagePercentFull();
+			}
+
+			@Override
+			protected int threshold() {
+				return 75;
+			}
+		});
+		
+		return healthBuilder.build();
 	}
 }

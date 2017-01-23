@@ -23,15 +23,19 @@ import com.codahale.metrics.CachedGauge;
 import com.codahale.metrics.Meter;
 import com.codahale.metrics.Metric;
 import com.codahale.metrics.MetricSet;
+import com.codahale.metrics.health.HealthCheck;
+import com.codahale.metrics.health.HealthCheck.Result;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.rebelai.wallace.BooleanLatch;
 import com.rebelai.wallace.OversizedArrayByteBufferPool;
+import com.rebelai.wallace.health.PercentHealthCheck;
 
 public abstract class AsyncReader<T extends AsynchronousChannel> implements Closeable, MetricSet {
 	private static final Logger LOG = LoggerFactory.getLogger(AsyncReader.class);
 	private static final int headerByteSize = 4; //We only store the length as int in the headers
 	
+	private Exception lastException = null;
 	private final AsyncJournal<T> journal;
 	protected AsyncJournalSegment<T> segment;
 	protected T channel;
@@ -253,6 +257,7 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 		LOG.debug("Rolling Journal file from {}", this.segment);
 		lock.writeLock().lock();
 		try {
+			lastException = null;
 			this._closeSegment();
 			if(this.segment.canBeRemoved()){
 				LOG.debug("Removing segment from journal");
@@ -263,6 +268,9 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 			this.channel = null;
 			this.segment = this.journal.getFirst();
 			this.channel = this._open(this.segment);
+		} catch(Exception e){
+			lastException = e;
+			throw e;
 		} finally {
 			lock.writeLock().unlock();
 		}
@@ -271,8 +279,12 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 	protected void open() throws IOException{
 		lock.writeLock().lock();
 		try {
+			lastException=null;
 			this.segment = this.journal.getFirst();
 			this.channel = _open(this.segment);
+		} catch(Exception e){
+			lastException = e;
+			throw e;
 		} finally {
 			lock.writeLock().unlock();
 		}
@@ -370,5 +382,49 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 		LOG.debug("Looking to wait. State: {}", this.isReading.getState());
 		this.isReading.await(timeout, unit);
 		LOG.debug("Queue has {} elements", this.queuedMessages.size());
+	}
+	
+	public Map<String, HealthCheck> getHealthChecksWarning() {
+		ImmutableMap.Builder<String, HealthCheck> healthBuilder = ImmutableMap.builder();
+		healthBuilder.put("ReaderBufferCapacity", new PercentHealthCheck(){
+			@Override
+			protected int percent() {
+				return AsyncReader.this.getQueuedMessagePercentFull();
+			}
+
+			@Override
+			protected int threshold() {
+				return 75;
+			}
+		});
+		return healthBuilder.build();
+	}
+
+	public Map<String, HealthCheck> getHealthChecksError() {
+		ImmutableMap.Builder<String, HealthCheck> healthBuilder = ImmutableMap.builder();
+		
+		healthBuilder.put("ReaderStopped", new HealthCheck(){
+			@Override
+			protected Result check() throws Exception {
+				if(AsyncReader.this.isClosed()){
+					StringBuilder b = new StringBuilder("Reader has been stopped or closed.");
+					b.append(" Segment: ").append(AsyncReader.this.segment);
+					if(AsyncReader.this.segment != null){
+						b.append(" "). append(AsyncReader.this.segment.getStats());
+					}
+					b.append(" Channel State: ").append(AsyncReader.this.isChannelClosed());
+					b.append(" LockState: ").append(AsyncReader.this.isReading.getState());
+					
+					if(AsyncReader.this.lastException != null){
+						return Result.unhealthy(new Exception(b.toString(), AsyncReader.this.lastException));
+					} else {
+						return Result.unhealthy(b.toString());
+					}
+				}
+				return Result.healthy();
+			}
+		});
+		
+		return healthBuilder.build();
 	}
 }
