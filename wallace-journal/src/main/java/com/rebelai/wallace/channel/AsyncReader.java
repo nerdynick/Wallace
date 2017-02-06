@@ -35,7 +35,7 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 	private static final Logger LOG = LoggerFactory.getLogger(AsyncReader.class);
 	private static final int headerByteSize = 4; //We only store the length as int in the headers
 	
-	private Exception lastException = null;
+	private Throwable lastException = null;
 	private final AsyncJournal<T> journal;
 	protected AsyncJournalSegment<T> segment;
 	protected T channel;
@@ -104,6 +104,7 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 				LOG.info("Closed stopping read");
 				readBuffer.clear();
 				resetCurrentMessage();
+				isReading.release();
 				return;
 			}
 			
@@ -142,7 +143,7 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 								AsyncReader.this.read(4+msg.length);
 								msgReadMeter.mark();
 							} catch (InterruptedException e) {
-								LOG.warn("Failed to add message to queue. Was interupted while waiting.");
+								LOG.error("Failed to add message to queue. Was interupted while waiting.", e);
 							}
 						}
 					}
@@ -168,22 +169,26 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 							AsyncReader.this.roll();
 							LOG.debug("Rolling done. Starting read from new file");
 							AsyncReader.this._read();
-						} catch(IOException e){
+						} catch(Exception e){
+							lastException = e;
 							LOG.error("Failed to roll segment", e);
 							isReading.release();
 						}
 					} else {
-						LOG.trace("Waiting on segment writes");
+						LOG.debug("Waiting on segment writes");
 						try {
-							Thread.sleep(5);
+							Thread.sleep(1);
 							//We release the lock since we are just tailing the file. 
 							//This lets anyone waiting to be woken up after these long periods of sleep.
 							//But we must do it after the sleep otherwise we can wind up with a number of 
 							//IO Threads being created due to multiple starts and sleeps
 							isReading.release();
+							LOG.debug("Released. Next");
 							AsyncReader.this.startRead();
-						} catch (InterruptedException e) {
-							LOG.warn("Interrupted while waiting for writes");
+						} catch (Exception e) {
+							LOG.error("Interrupted while waiting for writes", e);
+							lastException = e;
+							isReading.release();
 						}
 					}
 				} else {
@@ -197,6 +202,7 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 		@Override
 		public void failed(Throwable exc, Void attachment) {
 			LOG.error("Failed to read segment", exc);
+			lastException = exc;
 			isReading.release();
 		}
 	};
@@ -244,7 +250,18 @@ public abstract class AsyncReader<T extends AsynchronousChannel> implements Clos
 		if(!isClosed){
 			if(isReading.tryAquire()){
 				LOG.trace("Starting read: {}", isReading.getState());
-				this._read();
+				if(!this.segment.isOpenForReading()){
+					try {
+						this.open();
+					} catch (IOException e) {
+						LOG.error("Failed to reopen Channel", e);
+					}
+				}
+				try {
+					this._read();
+				} catch(Exception e){
+					LOG.error("Failed to read from channel", e);
+				}
 			} else {
 				LOG.debug("Already reading");
 			}

@@ -23,7 +23,7 @@ import org.slf4j.LoggerFactory;
 public class FileSystemJournalTest {
 	private static final Logger LOG = LoggerFactory.getLogger(FileSystemJournalTest.class);
 	
-	@Test
+//	@Test
 	public void testWriteRead() throws IOException, InterruptedException, ExecutionException, TimeoutException{
 		LOG.debug("Doing Write/Read test");
 		final int msgCount = 10; //Must be an even number
@@ -57,12 +57,14 @@ public class FileSystemJournalTest {
 		
 		LOG.debug("Writing 1st set");
 		for(int i=0; i<msgCount/2; i++){
+			LOG.debug("Write");
 			buffers.position(0);
 			journal.write(buffers);
 		}
 		
 		LOG.debug("Waiting for write to be done");
 		journal.getWriter().await(5, TimeUnit.SECONDS);
+		assertEquals(msgCount/2, journal.totalMessages());
 		
 		//Ensure the journal rolled
 		assertNotNull(journal.getFirst());
@@ -123,7 +125,7 @@ public class FileSystemJournalTest {
 	
 	@Test
 	public void testWriteReadCloseOpen() throws IOException, InterruptedException, ExecutionException, TimeoutException{
-		LOG.debug("Doing Write/Read Open/Close test");
+		LOG.info("Doing Write/Read Open/Close test");
 		final int msgCount = 10; //Must be an even number
 		final Path journalDir = Files.createTempDirectory("WallaceTemp");
 		final ByteBuffer buffers = ByteBuffer.allocate(12);
@@ -156,7 +158,16 @@ public class FileSystemJournalTest {
 		LOG.debug("Waiting for write to be done");
 		journal.getWriter().await(5, TimeUnit.SECONDS);
 		LOG.debug("All writing is done. Waiting for reads");
+		assertEquals(1, journal.totalMessages());
 		journal.getReader().await(5, TimeUnit.SECONDS);
+		
+		final long s = System.currentTimeMillis();
+		while(TimeUnit.SECONDS.toMillis(5) > (System.currentTimeMillis()-s)){
+			if(journal.queuedReads() >= 1){
+				break;
+			}
+		}
+		assertEquals(1, journal.queuedReads());
 
 		assertEquals(journal.getReader().currentFileOffset.get(), journal.getReader().currentSegment().readOffset());
 		LOG.debug("Stopping reader to write other messages");
